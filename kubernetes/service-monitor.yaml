@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: netmon-metrics
+  namespace: netmon
+  labels:
+    name: netmon
+spec:
+  ports:
+  - name: http
+    port: 8080
+    targetPort: 8080
+  selector:
+    name: netmon
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: netmon-monitor
+  namespace: monitoring
+spec:
+  endpoints:
+  - port: http
+    interval: 30s
+  selector:
+    matchLabels:
+      name: netmon
+  namespaceSelector:
+    matchNames:
+    - netmon

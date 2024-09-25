@@ -1,0 +1,29 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: k8s-netmon
+  namespace: netmon
+  labels:
+    k8s-app: netmon
+spec:
+  selector:
+    matchLabels:
+      name: netmon
+  template:
+    metadata:
+      labels:
+        name: netmon
+    spec:
+      serviceAccountName: netmon
+      tolerations:
+      # these tolerations are to have the daemonset runnable on control plane nodes
+      # remove them if your control plane nodes should not run pods
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: k8s-netmon
+        image: docker.io/library/k8s-netmon:v0.1
+        securityContext:
+          capabilities:
+            add: ["NET_RAW", "NET_ADMIN"]

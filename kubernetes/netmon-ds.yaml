@@ -4,7 +4,7 @@ metadata:
   name: k8s-netmon
   namespace: netmon
   labels:
-    k8s-app: netmon
+    app: netmon
 spec:
   selector:
     matchLabels:

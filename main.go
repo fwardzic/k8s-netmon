@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"log"
 	"net/http"
+	"os"
+	"sync"
 	"time"
 
 	"github.com/go-ping/ping"
@@ -15,34 +18,34 @@ import (
 )
 
 var (
-	avgRtt = prometheus.NewGaugeVec(
+	pingStatus = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "ping_avg_rtt_seconds",
-			Help: "Average round-trip time of ICMP pings in seconds.",
+			Name: "network_test_ping_status",
+			Help: "Ping test status (1 = success, 0 = failure)",
 		},
-		[]string{"ip"},
+		[]string{"nodeName"},
 	)
-	packetLoss = prometheus.NewGaugeVec(
+	kubeApiStatus = prometheus.NewGaugeVec(
 		prometheus.GaugeOpts{
-			Name: "ping_packet_loss_percent",
-			Help: "Percentage of packet loss during ICMP pings.",
+			Name: "network_test_k8s_api_status",
+			Help: "Kubernetes API test status (1 = success, 0 = failure)",
 		},
-		[]string{"ip"},
+		[]string{"nodeName"},
 	)
-	pingCount = prometheus.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "ping_count_total",
-			Help: "Total number of ICMP pings sent.",
+	externalUrlStatus = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "network_test_external_http_status",
+			Help: "External HTTP test status (1 = success, 0 = failure)",
 		},
-		[]string{"ip"},
+		[]string{"nodeName"},
 	)
 )
 
 func init() {
 	// Register metrics with Prometheus
-	prometheus.MustRegister(avgRtt)
-	prometheus.MustRegister(packetLoss)
-	prometheus.MustRegister(pingCount)
+	prometheus.MustRegister(pingStatus)
+	prometheus.MustRegister(kubeApiStatus)
+	prometheus.MustRegister(externalUrlStatus)
 }
 
 func getPodIP(namespace string) []string {
@@ -70,29 +73,51 @@ func getPodIP(namespace string) []string {
 	return podIpList
 }
 
-func pingIp(PodIpList []string) {
-	for _, ip := range PodIpList {
-		pinger, err := ping.NewPinger(ip)
-		if err != nil {
-			log.Printf("Could not create new ping instance. ERROR: %v\n", err)
-			continue
-		}
-		pinger.SetPrivileged(true)
-		pinger.Count = 2
-		pinger.Timeout = time.Second * 1
-		err = pinger.Run()
-		if err != nil {
-			log.Printf("Failed to ping IP %s: %v", ip, err)
-			continue
-		}
-		// Collect ping statistics
-		stats := pinger.Statistics()
-		log.Printf("Ping statistics for %s: %+v\n", ip, stats)
+func pingIp(ip string, nodeName string, wg *sync.WaitGroup) {
+	defer wg.Done()
+	pinger, err := ping.NewPinger(ip)
+	if err != nil {
+		log.Printf("Could not create new ping instance for %s: ERROR: %v\n", ip, err)
+	}
+	pinger.SetPrivileged(true)
+	pinger.Count = 5
+	pinger.Timeout = time.Second * 1
+	err = pinger.Run()
+	if err != nil {
+		log.Printf("Failed to ping IP %s: %v", ip, err)
+		pingStatus.WithLabelValues(nodeName).Set(0)
+	} else {
+		log.Printf("Successfully pinged IP %s: %v", ip, err)
+		pingStatus.WithLabelValues(nodeName).Set(1)
+	}
+}
 
-		// Update Prometheus metrics
-		avgRtt.WithLabelValues(ip).Set(stats.AvgRtt.Seconds())
-		packetLoss.WithLabelValues(ip).Set(stats.PacketLoss)
-		pingCount.WithLabelValues(ip).Add(float64(pinger.Count))
+func kubeApiTest(nodeName string, wg *sync.WaitGroup) {
+	defer wg.Done()
+	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	url := "https://kubernetes.default.svc"
+	resp, err := http.Get(url)
+	if err != nil {
+		log.Printf("Could not connect to Kubernetes service. %s\n", err)
+		kubeApiStatus.WithLabelValues(nodeName).Set(0)
+	} else {
+		log.Printf("Successfully connected to Kubernetes service %d\n", resp.StatusCode)
+		defer resp.Body.Close()
+		kubeApiStatus.WithLabelValues(nodeName).Set(1)
+	}
+}
+
+func externalUrlTest(url string, nodeName string, wg *sync.WaitGroup) {
+	defer wg.Done()
+	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+	resp, err := http.Get(url)
+	if err != nil {
+		log.Printf("Could not connect to External service. %s\n", err)
+		externalUrlStatus.WithLabelValues(nodeName).Set(0)
+	} else {
+		log.Printf("Successfully connected to External service %d\n", resp.StatusCode)
+		defer resp.Body.Close()
+		externalUrlStatus.WithLabelValues(nodeName).Set(1)
 	}
 }
 
@@ -106,11 +131,32 @@ func main() {
 		log.Println("Serving metrics at /metrics")
 		log.Fatal(http.ListenAndServe(":8080", nil))
 	}()
+	nodeName := os.Getenv("NODE_NAME")
+	if nodeName == "" {
+		log.Fatal("NODE_NAME environment variable not set")
+	}
 
 	for {
-		var PodIpList []string
-		PodIpList = getPodIP(ns)
-		pingIp(PodIpList)
+		PodIpList := getPodIP(ns)
+
+		var wg sync.WaitGroup
+
+		for _, ip := range PodIpList {
+			wg.Add(1)
+			go pingIp(ip, nodeName, &wg)
+		}
+
+		wg.Add(1)
+		go kubeApiTest(nodeName, &wg)
+
+		externalUrl := os.Getenv("EXTERNAL_URL")
+		if externalUrl == "" {
+			log.Fatal("External URL is not set")
+		}
+		wg.Add(1)
+		go externalUrlTest(externalUrl, nodeName, &wg)
+
+		wg.Wait()
 		time.Sleep(60 * time.Second)
 	}
 }

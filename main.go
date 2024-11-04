@@ -37,7 +37,7 @@ var (
 			Name: "network_test_external_http_status",
 			Help: "External HTTP test status (1 = success, 0 = failure)",
 		},
-		[]string{"nodeName"},
+		[]string{"nodeName", "url"},
 	)
 )
 
@@ -112,12 +112,12 @@ func externalUrlTest(url string, nodeName string, wg *sync.WaitGroup) {
 	http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	resp, err := http.Get(url)
 	if err != nil {
-		log.Printf("Could not connect to External service. %s\n", err)
-		externalUrlStatus.WithLabelValues(nodeName).Set(0)
+		log.Printf("Could not connect to External service %s. HTTP status code: %d, Error: %s\n", url, resp.StatusCode, err)
+		externalUrlStatus.WithLabelValues(nodeName, url).Set(0)
 	} else {
-		log.Printf("Successfully connected to External service %d\n", resp.StatusCode)
+		log.Printf("Successfully connected to External service %s, HTTP status code: %d\n", url, resp.StatusCode)
 		defer resp.Body.Close()
-		externalUrlStatus.WithLabelValues(nodeName).Set(1)
+		externalUrlStatus.WithLabelValues(nodeName, url).Set(1)
 	}
 }
 

@@ -21,9 +21,19 @@ spec:
       - key: node-role.kubernetes.io/control-plane
         operator: Exists
         effect: NoSchedule
+      - key: node-role.kubernetes.io/etcd
+        operator: Exists
+        effect: NoExecute
       containers:
       - name: k8s-netmon
-        image: docker.io/library/k8s-netmon:v0.1
+        image: quay.io/noirolabs/k8s-netmon
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        - name: EXTERNAL_URL
+          value: "https://example.com"
         securityContext:
           capabilities:
             add: ["NET_RAW", "NET_ADMIN"]
